@@ -187,7 +187,7 @@ class FullyKioskConfigFlow(ConfigFlow, domain=DOMAIN):
         return await self.async_step_discovery_confirm()
 
     async def async_step_reconfigure(
-        self, user_input: dict[str, Any]
+        self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle reconfiguration of an existing config entry."""
         errors: dict[str, str] = {}
