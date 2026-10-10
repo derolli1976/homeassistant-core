@@ -11,7 +11,7 @@ from homeassistant.components import persistent_notification
 from homeassistant.const import CONF_SCAN_INTERVAL
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryError
-from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 
@@ -95,9 +95,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: BlinkConfigEntry) -> boo
 
     entry.runtime_data = coordinator
 
+    _async_remove_stale_devices(hass, entry, blink)
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
+
+
+@callback
+def _async_get_known_serials(blink: Blink) -> set[str]:
+    """Return the serials of all cameras and sync modules on the account."""
+    return {camera.serial for camera in blink.cameras.values()} | {
+        sync_module.serial for sync_module in blink.sync.values()
+    }
+
+
+@callback
+def _async_remove_stale_devices(
+    hass: HomeAssistant, entry: BlinkConfigEntry, blink: Blink
+) -> None:
+    """Remove devices that no longer exist on the Blink account."""
+    known_serials = _async_get_known_serials(blink)
+    device_registry = dr.async_get(hass)
+    for device in dr.async_entries_for_config_entry(device_registry, entry.entry_id):
+        if not any(
+            domain == DOMAIN and serial in known_serials
+            for domain, serial in device.identifiers
+        ):
+            device_registry.async_remove_device(device.id)
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: BlinkConfigEntry, device_entry: dr.DeviceEntry
+) -> bool:
+    """Allow removal of devices that no longer exist on the Blink account."""
+    known_serials = _async_get_known_serials(entry.runtime_data.api)
+    return not any(
+        domain == DOMAIN and serial in known_serials
+        for domain, serial in device_entry.identifiers
+    )
 
 
 @callback

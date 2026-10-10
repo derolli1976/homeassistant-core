@@ -13,8 +13,11 @@ from homeassistant.components.blink.coordinator import SCAN_INTERVAL
 from homeassistant.components.blink.services import SERVICE_SAVE_VIDEO
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from homeassistant.setup import async_setup_component
 
 from tests.common import MockConfigEntry, async_fire_time_changed
+from tests.typing import WebSocketGenerator
 
 CAMERA_NAME = "Camera 1"
 FILENAME = "blah"
@@ -174,3 +177,61 @@ async def test_migrate_v3_to_v4(
     assert "hardware_id" in entry.data
     assert "device_id" not in entry.data
     assert entry.data["hardware_id"] == "Home Assistant"
+
+
+async def test_stale_device_removed_on_setup(
+    hass: HomeAssistant,
+    mock_blink_api: MagicMock,
+    mock_blink_auth_api: MagicMock,
+    mock_config_entry: MockConfigEntry,
+    device_registry: dr.DeviceRegistry,
+) -> None:
+    """Test devices removed from the Blink account are removed on setup."""
+    mock_config_entry.add_to_hass(hass)
+    device_registry.async_get_or_create(
+        config_entry_id=mock_config_entry.entry_id,
+        identifiers={(DOMAIN, "deleted_serial")},
+    )
+
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert not device_registry.async_get_device_by_identifier(
+        (DOMAIN, "deleted_serial"), mock_config_entry.entry_id
+    )
+    assert device_registry.async_get_device_by_identifier(
+        (DOMAIN, "12345"), mock_config_entry.entry_id
+    )
+
+
+async def test_remove_config_entry_device(
+    hass: HomeAssistant,
+    mock_blink_api: MagicMock,
+    mock_blink_auth_api: MagicMock,
+    mock_config_entry: MockConfigEntry,
+    device_registry: dr.DeviceRegistry,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """Test only devices missing from the Blink account can be removed."""
+    assert await async_setup_component(hass, "config", {})
+    mock_config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    existing_device = device_registry.async_get_device_by_identifier(
+        (DOMAIN, "12345"), mock_config_entry.entry_id
+    )
+    assert existing_device
+    # Added after setup to simulate a camera deleted while HA is running
+    stale_device = device_registry.async_get_or_create(
+        config_entry_id=mock_config_entry.entry_id,
+        identifiers={(DOMAIN, "deleted_serial")},
+    )
+
+    client = await hass_ws_client(hass)
+    response = await client.remove_device(existing_device.id)
+    assert not response["success"]
+
+    response = await client.remove_device(stale_device.id)
+    assert response["success"]
+    assert not device_registry.async_get(stale_device.id)
